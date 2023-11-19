@@ -9,7 +9,6 @@
 // SWAPCOIN()	- swap in hotest/safest trading pairs from lunar crush or similar RSS feed/api
 // BLKLST()		- update blacklist with bad pairs, recent pumps etc (independant of bot/deal) every hour ?  
 // Exclude any deals marked with the user notes text from being modified        (PARTIALLY IMPLEMENTED) 
-// some scope revisions will be necessary to get he rest of these to work.
 
 //import axios from 'axios';
 import fs from 'fs';
