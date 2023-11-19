@@ -24,5 +24,4 @@ Node.js code to manipulate 3commas bots and deals to maximise performance.
 
 // Exclude any deals marked with the user notes text from being modified        (PARTIALLY IMPLEMENTED)
 
-// 
-// some scope revisions will be necessary to get he rest of these to work.
+
