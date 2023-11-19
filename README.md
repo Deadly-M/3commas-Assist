@@ -1,5 +1,6 @@
 # 3commas-Assist
 Node.js code to manipulate 3commas bots and deals to maximise performance.
+enter a control code into your bot name, for example "BTC Longbot STP(1.25)" will activate the TP boost based on safety order depth.
 
 
 // 3 Commas bot assistant, Seeking alpha!
