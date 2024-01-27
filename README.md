@@ -17,6 +17,6 @@ enter a control code into your bot name, for example "BTC Longbot STP(1.25)" wil
 // SWAPCOIN()- swap in hotest/safest trading pairs from lunar crush or similar RSS feed/api            	(Nope!)
 // BLKLST()	 - update blacklist with bad pairs, recent pumps etc (independant of bot/deal) every hour ?	(Nope!)  
 // Exclude any deals marked with the user notes text from being modified                                (PARTIALLY IMPLEMENTED) 
-
+.
 
 
