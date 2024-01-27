@@ -1,139 +1,374 @@
 // 3 Commas bot assistant, Seeking alpha!
-// Check each DCA deal and manipulate various values like take profit level based on the depth of the safety orders.
+// Check each DCA deal and manipulate various values such as the take profit level based on the depth of the safety orders.
 // proposed control codes to be implemented during development.....
-// DTP() - Dynamic tp boost on the deal based on some TBD market condition
-// DSO() - Dynamic S.O. step scale on the bot based on some TBD market condition
-// STP() - scaled tp boost on the deal based on SO count*modifier               (NOW FULLY WORKING)
-// SL(,) - apply +ve stop loss on deal at specified point (%pnl,S.O. depth)     (3rd party API has missing implementation!)
-// SPAWN(,) 	- allow additional deal or smart trade convert after (%pnl,S.O. depth) only if a Stop loss or TTP is set 
-// SWAPCOIN()	- swap in hotest/safest trading pairs from lunar crush or similar RSS feed/api
-// BLKLST()		- update blacklist with bad pairs, recent pumps etc (independant of bot/deal) every hour ?  
-// Exclude any deals marked with the user notes text from being modified        (PARTIALLY IMPLEMENTED) 
+// DTP() - Dynamic tp boost on the deal based on some TBD market condition                              (Nope!)
+// DSO() - Dynamic S.O. step scale on the bot based on some TBD market condition                        (Nope!)
+// TSO() - Trailing Safety orders, helps with trending markets?                                         (Nope!)
+// STP() - scaled tp/trail boost on the deal based on SO count*modifier                                 (Fully Working)
+// SL(,) - apply +ve stop loss on deal at specified point (%pnl,S.O. depth)                             (MOSTLY WORKING, NEED HELP TSL bugged at 3c)
+// SPAWN() 	- allow additional deal only if safe (green stop loss or TTP is active )                    (Fully Working)
+// WATCH() - Monitor Margin ratio to prevent SPAWN or anything else getting out of hand, cancel SO's ? 	(Nope)
+// CONV()  	- lock SL & smart trade convert only if a Stop loss or TTP is set                           (WIP NOW, works) 
+// SWAPCOIN()- swap in hotest/safest trading pairs from lunar crush or similar RSS feed/api            	(Nope!)
+// BLKLST()	 - update blacklist with bad pairs, recent pumps etc (independant of bot/deal) every hour ?	(Nope!)  
+// Exclude any deals marked with the user notes text from being modified                                (PARTIALLY IMPLEMENTED) 
 
-//import axios from 'axios';
+// import axios from 'axios';
 import fs from 'fs';
 import threeCommasAPI from '3commas-api-node';
+import dotenv from 'dotenv'; // create a file ".env" and include your 3C API keys API_KEY=8c46... 
+//                                                                                API_SECRET=f576d... ] 
+dotenv.config();
 
-const apiKey    = 'Key'; // Replace with your 3C API key
-const apiSecret = 'Secret'; // secret key
-const interval  = 60000 * 0.5;  // Interval 1Min*Number mins 
-const logFile   = '3c_log.txt';
+const interval = 60000 * 1;  // Interval 1Min*Number mins 
+const logFile = '3c_log.txt';
 const api = new threeCommasAPI({
-  apiKey: apiKey,
-  apiSecret: apiSecret,
+  apiKey: process.env.API_KEY,
+  apiSecret: process.env.API_SECRET,
+  forcedMode: process.env.forcedMode, // 'paper', // use for demo account
 });
-let checkmessage='Starting';
+let checkmessage = 'Starting';
+log(`Start or re-start, (check PM2 logs for more info if in use)`)
 
 // Main endless loop
 while (true) {
   console.clear();
-  console.log(`3commas Assistant - Scanning Open DCA Positions .....`);
+  console.log(`3Commas Assistant - Scanning Open DCA Positions .....`);
   await scanTradingDeals();
-  log(`Scan loop complete, next interval is ${interval / 60000} Min.`);
+  log(`Scan loop complete, next interval is ${interval / 60000} Min.`, 'screen');
   await sleep(interval);
 }
 //
 
 async function scanTradingDeals() {
-    try {
-      // Fetch active bots and deals
-      const activeBotsResponse = await api.getBots({
-        limit: 50,        	
-      });
-      //log(JSON.stringify(activeBotsResponse))
-      const activeDealsResponse = await api.getDeals({
-        limit: 50,
-        scope: 'active',                
-      });
-      //log(JSON.stringify(activeDealsResponse))
+  try {
+    // Fetch active bots and deals
+    const activeBotsResponse = await api.getBots({
+      limit: 50,
+    });
+    //log(JSON.stringify(activeBotsResponse, null, 2))
+    const activeDealsResponse = await api.getDeals({
+      limit: 50,
+      scope: 'active',
+    });
+    //log(JSON.stringify(activeDealsResponse, null, 2))
 
-      if (activeDealsResponse.length === 0) {
-        log(`No active deals found.`);
-      } else {
-        // Iterate through active deals and build a list for the table
-        const tableData = [];
+    if (activeDealsResponse.length === 0) {
+      log(`No active deals found.`);
+    } else {
+      // Iterate through active deals and build a list for the table
+      const tableData = [];
 
-        for (const deal of activeDealsResponse) {
-          const botid = deal.bot_id;
-          const name = deal.bot_name;
-          const coin = deal.to_currency;
-          const pnl = parseFloat(deal.actual_profit_percentage); // Parse as float
-          const formattedPNL = pnl >= 0 ? `+${pnl.toFixed(2)}` : pnl.toFixed(2); // Add a plus sign if positive
-          const safetyOrders = parseFloat(deal.completed_safety_orders_count); // Parse as float
-          const activeBot = activeBotsResponse.find(bot => bot.id === botid);
-          let originTP = activeBot ? parseFloat(activeBot.take_profit) : 0;          
-          let actualTP = parseFloat(deal.take_profit).toFixed(2); // Parse as float
-          let dealSL   = parseFloat(deal.stop_loss_percentage).toFixed(2); // Stoploss on deal.
-          let dealnote = deal.note
-          let targetTP = null
+      for (const deal of activeDealsResponse) {
+        const botid = deal.bot_id;
+        const name = deal.bot_name;
+        const coin = deal.to_currency;
+        const stpls = deal.stop_loss_percentage
+        const pnl = parseFloat(deal.actual_profit_percentage); // Parse as float
+        const formattedPNL = pnl >= 0 ? `+${pnl.toFixed(2)}` : pnl.toFixed(2); // Add a plus sign if positive
+        const safetyOrders = parseFloat(deal.completed_safety_orders_count); // Parse as float
+        const activeBot = activeBotsResponse.find(bot => bot.id === botid);
+        const tslstatus = deal.tsl_enabled;
+        const dealaverage = parseFloat(deal.bought_average_price);
+        const base = parseFloat(deal.base_order_average_price);
+        let originTP = activeBot ? parseFloat(activeBot.take_profit) : 0;
+        let originMP = activeBot ? parseFloat(activeBot.min_profit_percentage) : 0;
+        let maxactivedeals = activeBot.max_active_deals;
+        let activedealscount = activeBot.active_deals_count;
+        let actualTP = parseFloat(deal.take_profit).toFixed(2); // Parse as float
+        let actualMP = parseFloat(deal.min_profit_percentage).toFixed(2); // Parse as float
+        let dealSL = deal.stop_loss_percentage //parseFloat(deal.stop_loss_percentage).toFixed(2); // Stoploss on deal.
+        let dealnote = deal.note
+        let targetTP = null
+        let targetMP = null
 
-          const firstColumns = {
-            'Name': name,
-            'Coin': coin.slice(0, -4),
-            'PNL': formattedPNL,
-            'S.O.': safetyOrders,
-            'Bot TP%': originTP,
-          };       
-          let lastColumns;
+        let status = deal.status
 
-          // Check if control code STP is present and deal isn't TA exit and notes field isnt set 
-                 
-          if ((name.includes('STP(')) && (Object.keys(deal.close_strategy_list).length === 0) && (!dealnote || !dealnote.includes("-STP"))) {
-            checkmessage = 'Monitoring';                     
-            let stpParameter = parseFloat(name.match(/STP\(([^)]+)\)/)[1]); // Extracting the value from STP(x)
-            targetTP = (originTP + (safetyOrders * (stpParameter - 1))).toFixed(2);                                
+        const firstColumns = {
+          'Name': name.substring(0, name.indexOf(':')),
+          'Coin': coin.slice(0, -4),
+          'PNL': formattedPNL,
+          //'Ave.Entry': dealaverage,
+          //'Stoploss': stpls,
+          'SO': safetyOrders,
+          'BotTP%': originTP,
+          'BotMP%': originMP,
+        };
+        let lastColumns;
+
+        // Check if control code STP is present and deal isn't TA exit and notes field isnt set                
+        if ((name.includes('STP(')) && (!dealnote || !dealnote.includes("-STP"))) {
+          checkmessage = 'Monitoring';
+          let boost = 1;
+          let stpParameter = parseFloat(name.match(/STP\(([^)]+)\)/)[1]); // Extracting the value from STP(x)
+
+          if (dealnote && dealnote.includes("extra deal was offered")) {
+            boost = 2;
+            checkmessage = (`SL set,TP X${boost}`); // console.log("Green & Safe, TP is X", boost);
+          }
+          else {
+            boost = 1;
+          }
+          if (Object.keys(deal.close_strategy_list).length === 0) { // for % TP deals
+            targetTP = ((originTP + (safetyOrders * (stpParameter - 1))) * boost).toFixed(2);
+
             if (actualTP !== targetTP) { // Check if actual TP does not equal Target TP
-              checkmessage = 'Updating';              
-              console.log("Changes pending on deal",deal.id,actualTP,targetTP)
-                         
-              // Update the take profit for the deal
-              try {                         
-                await api.dealUpdateTp(deal.id, targetTP);
+              checkmessage = 'Updating'
+              console.log("Changes pending on deal", deal.id, actualTP, targetTP, boost)
+              // Update the take profit & trailing dev. for the deal
+              try {
+                await api.dealUpdate({
+                  take_profit: (targetTP),
+                  trailing_deviation: (targetTP / 3).toFixed(2),
+                  deal_id: deal.id,
+                });
               } catch (updateError) {
                 log(`Error updating take profit for deal ${deal.id}: ${updateError.message}`);
               }
-              log(`Pair: ${coin.padEnd(10)} - Safety Orders: ${safetyOrders} - ${checkmessage} Take Profit: ${actualTP}% to ${targetTP}%` ,'hide');
-            } 
-                     
-          } else {
-            checkmessage =
-            (dealnote && dealnote.includes("-STP" )) ? "STP Excluded" :                
-                "Ignoring";            
-          }
-
-          // Check if control code SL is present and deal isn't TA exit                  
-          if (name.includes('SL('))  {
-            checkmessage = 'Monitoring';                     
-            let slParameter1 = parseFloat(name.match(/SL\(([^,]+),([^)]+)\)/)[1]); // Extracting the value from SL(x,);
-            let slParameter2 = parseInt(name.match(/SL\(([^,]+),([^)]+)\)/)[2], 10); // Extracting the value from SL(,x)
-            // 3rd party API has missing implementation for doing anything with this!
-            // console.log(slParameter1,slParameter2,dealSL)
-
+              log(`Pair: ${coin.padEnd(10)} - Safety Orders: ${safetyOrders} - ${checkmessage} Take Profit: ${actualTP}% to ${targetTP}%`, 'file');
             }
-                  
-          // Concatenate the table data arrays and push into tableData
-          lastColumns = {
-            'Target TP%': targetTP,
-            'Deal TP%': actualTP,
-            'Status': checkmessage,
-          };           
-          tableData.push({ ...firstColumns, ...lastColumns });     
+          }
+          else {
+            targetMP = ((originMP + (safetyOrders * (stpParameter - 1))) * boost).toFixed(2);
+
+            if (actualMP !== targetMP) { // Check if actual TP does not equal Target TP
+              checkmessage = 'Updating'
+              console.log("Changes pending on deal", deal.id, actualMP, targetMP, boost)
+              // Update the take profit & trailing dev. for the deal
+              try {
+                await api.dealUpdate({
+                  min_profit_percentage: (targetMP),
+                  deal_id: deal.id,
+                });
+              } catch (updateError) {
+                log(`Error updating take profit for deal ${deal.id}: ${updateError.message}`);
+              }
+              log(`Pair: ${coin.padEnd(10)} - Safety Orders: ${safetyOrders} - ${checkmessage} Min Take Profit: ${actualMP}% to ${targetMP}%`, 'file');
+            }
           }
 
-        if (tableData.length > 0) {          
-          console.table(tableData);          		  
         }
+        else {
+          checkmessage =
+            (dealnote && dealnote.includes("-STP")) ? "STP Excluded" :
+              "Has TA exit";
+        }
+
+        // Check if control code SL is present                   
+        if (name.includes('SL(')) {
+          //checkmessage = 'Monitoring';
+          let slParameter1 = parseFloat(name.match(/SL\(([^,]+),([^)]+)\)/)[1]); // Extracting the value from SL(x,);
+          let slParameter2 = parseInt(name.match(/SL\(([^,]+),([^)]+)\)/)[2], 10); // Extracting the value from SL(,x)
+          // 3rd party npm API wrapper has missing implementation for doing anything with this so i added it to the local file!
+          //console.log(slParameter1,slParameter2,dealSL)
+
+          if (pnl > slParameter1 && safetyOrders >= slParameter2 && deal.stop_loss_percentage === '0.0') {
+            // old logic ^ "&& deal.stop_loss_price === null" 
+
+            console.log("set SL Conditon met");
+            try {
+              // update deal settigns
+              const targetsl = (((base - dealaverage) / base) * 100); // convert the stoploss from base to average
+              //console.log(deal.id,base,dealaverage,targetsl)
+              //const response = await api.dealUpdate({      
+              //  tsl_enabled: true,
+              //  stop_loss_percentage: 50, 
+              //  deal_id: deal.id,      
+              //});
+              //await sleep(1000);
+              const response = await api.dealUpdate({
+                //tsl_enabled: true,
+                stop_loss_percentage: (targetsl - pnl / 4),
+                deal_id: deal.id,
+              });
+              checkmessage = 'Update TSL';
+              //log("Deal Update Response:", JSON.stringify(response, null, 2));
+              log(`Pair: ${coin.padEnd(10)} - Safety Orders: ${safetyOrders} - ${checkmessage} - Deal_ID: ${deal.id}, ${slParameter1}, ${slParameter2}, ${targetsl}`, 'file');
+            } catch (updateError) {
+              console.error(`Error Deal updating data: ${updateError.message}`);
+            }
+          }
+
+        }
+
+        // Check if control code CONV is present  
+        if (name.includes('CONV(')) {
+          checkmessage = 'Monitoring';
+          let convParameter1 = parseFloat(name.match(/CONV\(([^,]+),([^)]+)\)/)[1]); // Extracting the value from CONV(x,);
+          let convParameter2 = parseInt(name.match(/CONV\(([^,]+),([^)]+)\)/)[2], 10); // Extracting the value from CONV(,x)
+          // 3rd party npm API wrapper has missing implementation for doing anything with this so i added it to the local file!
+          //console.log(convParameter1,convParameter2,dealSL)
+
+          if (pnl > (actualTP / convParameter1)) { // && deal.stop_loss_price > dealaverage) { // && safetyOrders >= convParameter2) {
+            console.log("Convert Conditon met");
+            const targetsl = (((base - dealaverage) / base) * 100); // convert the stoploss from base to average
+
+            try {
+              // set SL, boost TP & convert deal
+              await api.dealUpdate({
+                stop_loss_percentage: (targetsl - pnl / convParameter2),
+                //tsl_enabled: true,
+                deal_id: deal.id,
+              });
+              //await sleep(60000) // 10 secs
+              //await api.dealUpdate({      
+              //  tsl_enabled: true,
+              //  deal_id: deal.id,      
+              //});
+              await api.dealUpdateTp(deal.id, (actualTP * 2));
+              const response = await api.dealConvertToSmartTrade(deal.id);
+              checkmessage = 'Convert to Smart';
+              //console.log("Deal Update Response:", JSON.stringify(response, null, 2));
+              log(`Pair: ${coin.padEnd(10)} - Safety Orders: ${safetyOrders} - ${checkmessage} - Deal_ID: ${deal.id}, ${convParameter1}, ${convParameter2}`, 'file');
+            } catch (updateError) {
+              console.error(`Error Deal updating data: ${updateError.message}`);
+            }
+          }
+
+        }
+
+        // Check for SPAWN command
+        if ((name.includes('SPAWN(')) && (dealSL !== "0.0" && dealSL !== null) && (!dealnote || !dealnote.includes("extra deal was offered"))) {
+          checkmessage = 'SPAWN';
+          let count = activeBot.max_active_deals
+          log(`Spawn Window Open  , Offering extra deal slot (Total ${activeBot.active_deals_count + 1} on bot ${botid}), from Deal_ID: ${deal.id}`)
+          await botReadAndUpdate(botid, activeBot.active_deals_count + 1)
+          try {
+            await api.dealUpdate({
+              note: "Green & Safe, extra deal offered for 1min",
+              deal_id: deal.id,
+            });
+          } catch (updateError) {
+            log(`Error updating note for deal ${deal.id}: ${updateError.message}`);
+          }
+          await sleep(60000);
+          await botReadAndUpdate(botid, count)
+          log(`Spawn Window Closed, Reseting max active deals to ${count} on bot ${botid}`)
+          try {
+            await api.dealUpdate({
+              note: "Green & Safe, extra deal was offered",
+              deal_id: deal.id,
+            });
+          } catch (updateError) {
+            log(`Error updating note for deal ${deal.id}: ${updateError.message}`);
+          }
+
+          //log(`Pair: ${coin.padEnd(10)} - Safety Orders: ${safetyOrders} - ${checkmessage} - Deal_ID: ${deal.id}`, 'file');
+        }
+
+        // Concatenate the table data arrays and push into tableData
+        lastColumns = {
+          'TargetTP%': targetTP,
+          'TargetMP%': targetMP,
+          'DealTP%': actualTP,
+          'DealMP%': actualMP,
+          'Status': checkmessage,
+        };
+        tableData.push({ ...firstColumns, ...lastColumns });
+        //console.log(status,activedealscount,maxactivedeals)     
       }
-    } catch (error) {
+
+      if (tableData.length > 0) {
+        console.table(tableData);
+      }
+    }
+  } catch (error) {
+    if (error.message === 'activeBotsResponse.find is not a function') {
+      log(`Error fetching active deals: Bad response, maybe timed out or API overload.`);
+    } else {
       log(`Error fetching active deals: ${error.message}`);
-    }    
+    }
+  }
 }
+
+const smarttradeconvert = async (dealId) => {
+  try {
+    // convert deal to seperate smart trade
+    const response = await api.dealConvertToSmartTrade(dealId);
+    console.log("XXXXXXXXXXXXXXXXXXXXXXX");
+    console.log("Update Response:", JSON.stringify(response, null, 2));
+  } catch (updateError) {
+    console.error(`Error updating data: ${updateError.message}`);
+  }
+};
+
+async function botReadAndUpdate(botId, newValue) {
+  try {
+    // Fetching bots
+    const data = await api.getBots();
+    //console.log(botId);
+
+    // Extracting data into variables or arrays for a specific bot_id
+    data.forEach(async (item) => {
+      // Check if the bot_id matches the desired value
+      if (item.id === botId) {
+        // Directly assign values to variables or arrays
+        const names = item.name;
+        const pairs = item.pairs; //.join(', '); // Assuming pairs is an array
+        const baseOrderVolumes = item.base_order_volume;
+        const takeProfits = item.take_profit;
+        const safetyOrderVolumes = item.safety_order_volume;
+        const martingaleVolumeCoefficients = item.martingale_volume_coefficient;
+        const martingaleStepCoefficients = item.martingale_step_coefficient;
+        const maxSafetyOrders = item.max_safety_orders;
+        const activeSafetyOrdersCounts = item.active_safety_orders_count;
+        const safetyOrderStepPercentages = item.safety_order_step_percentage;
+        const takeProfitTypes = item.take_profit_type;
+        const strategyLists = item.strategy_list; // Maintain as an array
+        const maxActiveDeals = item.max_active_deals;
+        const botIds = item.id;
+        const isEnabled = item.is_enabled;
+
+        // Update bot settings
+        const response = await api.botUpdate({
+          name: names,
+          pairs: JSON.stringify(pairs),
+          is_enabled: true,
+          base_order_volume: baseOrderVolumes,
+          take_profit: takeProfits,
+          safety_order_volume: safetyOrderVolumes,
+          martingale_volume_coefficient: martingaleVolumeCoefficients,
+          martingale_step_coefficient: martingaleStepCoefficients,
+          max_safety_orders: maxSafetyOrders,
+          active_safety_orders_count: activeSafetyOrdersCounts,
+          safety_order_step_percentage: safetyOrderStepPercentages,
+          take_profit_type: takeProfitTypes,
+          strategy_list: JSON.stringify(strategyLists),
+          max_active_deals: newValue,
+          bot_id: botIds,
+        });
+        console.log("Update Response:", JSON.stringify(response, null, 2));
+
+        //console.log(isEnabled);
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching or updating bot:', error.message);
+  }
+};
+
+const botnewDeal = async (botId) => {
+  try {
+    // force new deal experimental   
+    const response = await api.botStartNewDeal({
+      "pair": "BTC_FIDA",
+      "skip_signal_checks": true,
+      "skip_open_deals_checks": true,
+      "bot_id": botId,
+      "note": "test"
+    });
+
+    console.log("Update Response:", JSON.stringify(response, null, 2));
+  } catch (updateError) {
+    console.error(`Error updating data: ${updateError.message}`);
+  }
+};
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function log(message,mode) {
+function log(message, mode) {
   const now = new Date();
   const options = {
     year: 'numeric',
@@ -145,8 +380,14 @@ function log(message,mode) {
     hour12: false,
   };
   const timestamp = now.toLocaleString(undefined, options);
-  if (mode !== 'hide') {
+
+  if (mode === 'screen') {
     console.log(`${timestamp} - ${message}`); // Log to the console
+  } else if (mode === 'file') {
+    fs.appendFileSync(logFile, `${timestamp} - ${message}\n`, 'utf8'); // Append to the log file
+  } else {
+    // Log to both screen and file if mode is not set
+    console.log(`${timestamp} - ${message}`);
+    fs.appendFileSync(logFile, `${timestamp} - ${message}\n`, 'utf8');
   }
-  fs.appendFileSync(logFile, `${timestamp} - ${message}\n`, 'utf8'); // Append the message with timestamp to the log file
 }
